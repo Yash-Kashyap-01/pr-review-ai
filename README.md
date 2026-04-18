@@ -11,6 +11,8 @@
 ## Stack
 Next.js 14 (App Router) · TypeScript · Tailwind CSS · OpenAI GPT-4o · Vercel
 
+Built using OpenAI Codex.
+
 ## Getting started
 ```bash
 git clone <your-repo-url>
@@ -29,8 +31,8 @@ Open http://localhost:3000
 | GITHUB_TOKEN | Recommended | From github.com/settings/tokens — raises rate limit from 60 to 5000 req/hr |
 
 ## Demo PRs
-- https://github.com/OWASP/NodeGoat/pull/226 (security issues)
-- https://github.com/gothinkster/realworld/pull/388 (code quality)
+- https://github.com/expressjs/express/pull/3276 — Clean PR example
+- https://github.com/OWASP/NodeGoat/pull/226 — PR with security issues
 
 ## Architecture
 User → Next.js UI → POST /api/review → GitHub REST API (fetch diff) → GPT-4o (review) → Structured JSON → Rendered cards

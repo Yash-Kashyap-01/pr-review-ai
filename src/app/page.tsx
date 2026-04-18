@@ -154,7 +154,7 @@ export default function Home() {
             onChange={(e) => setPrUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void handleReview()}
             disabled={status === "loading"}
-            placeholder="https://github.com/expressjs/express/pull/3276"
+            placeholder="https://github.com/owner/repo/pull/123"
             className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50 text-sm"
           />
           <button
@@ -167,28 +167,39 @@ export default function Home() {
           </button>
         </div>
 
-        <p className="text-gray-600 text-xs mt-4">
-          Try an example:{" "}
-          <button
-            type="button"
-            onClick={() =>
-              setPrUrl("https://github.com/expressjs/express/pull/3276")
-            }
-            className="text-blue-500 hover:text-blue-400 underline"
-          >
-            expressjs/express #3276
-          </button>
-          {" · "}
-          <button
-            type="button"
-            onClick={() =>
-              setPrUrl("https://github.com/facebook/react/pull/11347")
-            }
-            className="text-blue-500 hover:text-blue-400 underline"
-          >
-            facebook/react #11347
-          </button>
-        </p>
+        <div className="text-xs mt-4 space-y-2">
+          <p className="text-gray-600">Try an example:</p>
+          <div className="flex items-center gap-2 justify-center">
+            <span className="text-green-400">●</span>
+            <button
+              type="button"
+              onClick={() =>
+                setPrUrl("https://github.com/expressjs/express/pull/3276")
+              }
+              className="text-green-400 hover:text-green-300 underline"
+            >
+              expressjs/express #3276 — Clean PR
+            </button>
+            <span className="text-gray-500">
+              A well-written PR to test the review
+            </span>
+          </div>
+          <div className="flex items-center gap-2 justify-center">
+            <span className="text-red-400">●</span>
+            <button
+              type="button"
+              onClick={() =>
+                setPrUrl("https://github.com/OWASP/NodeGoat/pull/226")
+              }
+              className="text-red-400 hover:text-red-300 underline"
+            >
+              OWASP NodeGoat #226 — Buggy PR
+            </button>
+            <span className="text-gray-500">
+              A PR with known security vulnerabilities
+            </span>
+          </div>
+        </div>
       </div>
 
       {status === "loading" && (
