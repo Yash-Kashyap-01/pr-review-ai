@@ -6,76 +6,6 @@ export interface PullRequestFile {
   deletions: number;
 }
 
-class GitHubFetchError extends Error {
-  status?: number;
-
-  constructor(message: string, status?: number) {
-    super(message);
-    this.name = "GitHubFetchError";
-    this.status = status;
-  }
-}
-
-export function parsePRUrl(
-  prUrl: string,
-): { owner: string; repo: string; number: number } {
-  try {
-    const cleaned = prUrl.trim();
-    const withoutSlash = cleaned.replace(/\/$/, "");
-    const withoutQuery = withoutSlash.split("?")[0].split("#")[0];
-    const withoutSuffix = withoutQuery.replace(
-      /\/(files|commits|checks|reviews)$/,
-      "",
-    );
-
-    let pathname: string;
-    try {
-      const url = new URL(withoutSuffix);
-      if (!url.hostname.includes("github.com")) {
-        throw new Error("Not a GitHub URL");
-      }
-      pathname = url.pathname;
-    } catch {
-      if (withoutSuffix.includes("github.com")) {
-        pathname = withoutSuffix.split("github.com")[1];
-      } else {
-        throw new Error("Invalid GitHub URL");
-      }
-    }
-
-    const parts = pathname.replace(/^\//, "").split("/");
-    if (parts.length < 4) {
-      throw new Error("URL too short");
-    }
-
-    const owner = parts[0];
-    const repo = parts[1];
-    const pullWord = parts[2];
-    const numberStr = parts[3];
-
-    if (!owner || !repo) {
-      throw new Error("Missing owner or repo");
-    }
-
-    if (pullWord !== "pull") {
-      throw new Error("Not a pull request URL — must contain /pull/");
-    }
-
-    const number = parseInt(numberStr, 10);
-    if (isNaN(number) || number <= 0) {
-      throw new Error("Invalid PR number");
-    }
-
-    return { owner, repo, number };
-  } catch (err) {
-    throw new Error(
-      `Invalid GitHub PR URL. Expected format: https://github.com/owner/repo/pull/123. ` +
-        `Got: "${prUrl}". ` +
-        (err instanceof Error ? `Reason: ${err.message}` : ""),
-    );
-  }
-}
-
 type GithubFileItem = {
   filename?: string;
   patch?: string;
@@ -84,294 +14,249 @@ type GithubFileItem = {
   deletions?: number;
 };
 
-function buildHeaders(): Record<string, string> {
+export function parsePRUrl(rawUrl: string): {
+  owner: string;
+  repo: string;
+  number: number;
+} {
+  const expected =
+    "Expected format: https://github.com/owner/repo/pull/123";
+
+  if (typeof rawUrl !== "string") {
+    throw new Error(`Invalid PR URL input. ${expected}`);
+  }
+
+  let cleaned = rawUrl.trim();
+  if (!cleaned) {
+    throw new Error(`PR URL is empty. ${expected}`);
+  }
+
+  cleaned = cleaned.replace(/\/+$/, "");
+  cleaned = cleaned.split("?")[0] ?? cleaned;
+  cleaned = cleaned.split("#")[0] ?? cleaned;
+  cleaned = cleaned.replace(/\/(files|commits|checks|reviews|diffs)\/?$/i, "");
+
+  if (!cleaned.includes("github.com")) {
+    throw new Error(
+      `URL must be a GitHub pull request URL that includes github.com. ${expected}`,
+    );
+  }
+
+  const afterDomain = cleaned.split("github.com")[1];
+  if (typeof afterDomain !== "string") {
+    throw new Error(
+      `Could not parse the path after github.com in "${rawUrl}". ${expected}`,
+    );
+  }
+
+  const path = afterDomain.replace(/^\/+/, "");
+  const parts = path.split("/").filter(Boolean);
+
+  if (parts.length < 4) {
+    throw new Error(
+      `URL path is incomplete. Found "${path}". ${expected}`,
+    );
+  }
+
+  const owner = parts[0];
+  const repo = parts[1];
+  const pullSegment = parts[2];
+  const numberRaw = parts[3];
+
+  if (!owner) {
+    throw new Error(`Missing repository owner in URL. ${expected}`);
+  }
+
+  if (!repo) {
+    throw new Error(`Missing repository name in URL. ${expected}`);
+  }
+
+  if (pullSegment !== "pull") {
+    throw new Error(
+      `URL must contain "/pull/" after owner/repo. Found "/${pullSegment}/". ${expected}`,
+    );
+  }
+
+  const number = Number.parseInt(numberRaw, 10);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw new Error(
+      `Invalid pull request number "${numberRaw}". ${expected}`,
+    );
+  }
+
+  return { owner, repo, number };
+}
+
+export function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "pr-review-ai/1.0",
   };
+
   const token = process.env.GITHUB_TOKEN;
-  if (token && token.length > 10 && !token.includes("REPLACE")) {
+  const tokenIsUsable =
+    typeof token === "string" &&
+    token.length > 10 &&
+    !token.startsWith("REPLACE");
+
+  if (tokenIsUsable) {
     headers.Authorization = `Bearer ${token}`;
+    console.log("[github] Using GITHUB_TOKEN for API requests");
+  } else {
+    console.log("[github] GITHUB_TOKEN missing/invalid; using unauthenticated requests");
   }
+
   return headers;
 }
 
-function mapStatusToMessage(
-  status: number,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): string | null {
-  if (status === 404) {
-    return (
-      `PR not found: github.com/${owner}/${repo}/pull/${prNumber}. ` +
-      "Make sure the repository is public and the PR number exists."
-    );
-  }
-  if (status === 401) {
-    return "GitHub authentication failed. Check GITHUB_TOKEN or remove it to use public access.";
-  }
-  if (status === 403 || status === 429) {
-    return (
-      "GitHub rate limit hit. The app needs a GITHUB_TOKEN environment variable. " +
-      "Add it in your Vercel dashboard under Settings → Environment Variables."
-    );
-  }
-  if (status === 422) {
-    return "Invalid PR number.";
-  }
-  return null;
-}
-
-function finalizeFiles(all: GithubFileItem[]): PullRequestFile[] {
-  return all
-    .filter((f) => f.status !== "removed")
-    .filter((f) => typeof f.patch === "string" && f.patch.length > 0)
-    .slice(0, 50)
-    .map((f): PullRequestFile => ({
-      filename: String(f.filename ?? ""),
-      patch: String(f.patch ?? ""),
-      status: String(f.status ?? ""),
-      additions: typeof f.additions === "number" ? f.additions : 0,
-      deletions: typeof f.deletions === "number" ? f.deletions : 0,
-    }));
-}
-
-async function fetchFilesFromApi(
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<PullRequestFile[]> {
-  const headers = buildHeaders();
-  const base = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`;
-  const all: GithubFileItem[] = [];
-  let page = 1;
-
-  for (;;) {
-    const url = `${base}?per_page=100&page=${page}`;
-    console.log(
-      `[github] Fetching page ${page} for ${owner}/${repo}/pulls/${prNumber}`,
-    );
-    const response = await fetch(url, { headers, cache: "no-store" });
-    console.log(`[github] Response status: ${response.status}`);
-
-    if (!response.ok) {
-      const rateLimitRemaining = response.headers.get('x-ratelimit-remaining')
-      const rateLimitReset = response.headers.get('x-ratelimit-reset')
-
-      console.log(`[github] HTTP ${response.status} for ${owner}/${repo}/pull/${prNumber}`)
-      console.log(`[github] Rate limit remaining: ${rateLimitRemaining}`)
-      console.log(`[github] GITHUB_TOKEN set: ${!!process.env.GITHUB_TOKEN}`)
-
-      if (response.status === 404) {
-        // Could be rate limit disguised as 404 when no token
-        if (!process.env.GITHUB_TOKEN || process.env.GITHUB_TOKEN.length < 10) {
-          throw new GitHubFetchError(
-            `GitHub returned 404. This is often caused by hitting the rate limit ` +
-            `without a GitHub token. The GITHUB_TOKEN environment variable is not ` +
-            `set on this server. Add it in Vercel Dashboard → Settings → ` +
-            `Environment Variables, then redeploy.`,
-            404,
-          )
-        }
-        throw new GitHubFetchError(
-          `PR not found: github.com/${owner}/${repo}/pull/${prNumber}. ` +
-          `Verify the PR exists and the repository is public.`,
-          404,
-        )
-      }
-
-      if (response.status === 403 || response.status === 429) {
-        throw new GitHubFetchError(
-          `GitHub API rate limit exceeded. ` +
-          `Add a GITHUB_TOKEN in Vercel Dashboard → Settings → Environment Variables. ` +
-          `Rate limit resets at: ${rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000).toISOString() : 'unknown'}`,
-          response.status,
-        )
-      }
-
-      if (response.status === 422) {
-        throw new GitHubFetchError(
-          `Invalid PR. The pull request number may not exist in this repository.`,
-          422,
-        )
-      }
-
-      throw new GitHubFetchError(
-        `GitHub API error: HTTP ${response.status} for ${owner}/${repo}/pull/${prNumber}`,
-        response.status,
-      )
-    }
-
-    let data: unknown;
-    try {
-      data = await response.json();
-    } catch {
-      throw new GitHubFetchError("Unexpected GitHub API response format");
-    }
-
-    if (!Array.isArray(data)) {
-      throw new GitHubFetchError("Unexpected GitHub API response format");
-    }
-
-    const batch = data as GithubFileItem[];
-    all.push(...batch);
-
-    if (batch.length < 100) {
-      break;
-    }
-    page += 1;
-  }
-
-  return finalizeFiles(all);
-}
-
-function normalizeDiffPath(rawPath: string | undefined): string {
-  if (!rawPath) return "";
-  const trimmed = rawPath.trim().replace(/^"+|"+$/g, "");
-  if (trimmed.startsWith("a/") || trimmed.startsWith("b/")) {
-    return trimmed.slice(2);
-  }
-  return trimmed;
-}
-
-function parseDiffBlock(block: string): GithubFileItem | null {
-  const lines = block.split("\n");
-  const renameTo = lines.find((line) => line.startsWith("rename to "));
-  const newPathLine = lines.find(
-    (line) => line.startsWith("+++ ") && line !== "+++ /dev/null",
-  );
-  const oldPathLine = lines.find(
-    (line) => line.startsWith("--- ") && line !== "--- /dev/null",
-  );
-
-  const filename =
-    normalizeDiffPath(renameTo?.slice("rename to ".length)) ||
-    normalizeDiffPath(newPathLine?.slice(4)) ||
-    normalizeDiffPath(oldPathLine?.slice(4));
-
-  if (!filename) {
-    return null;
-  }
-
-  const hunkIndex = lines.findIndex((line) => line.startsWith("@@"));
-  if (hunkIndex === -1) {
-    return null;
-  }
-
-  const patchLines = lines.slice(hunkIndex);
-  let additions = 0;
-  let deletions = 0;
-
-  for (const line of patchLines) {
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      additions += 1;
-      continue;
-    }
-    if (line.startsWith("-") && !line.startsWith("---")) {
-      deletions += 1;
-    }
-  }
-
-  const isAdded = lines.includes("--- /dev/null");
-  const isRemoved = lines.includes("+++ /dev/null");
-  const isRenamed = lines.some((line) => line.startsWith("rename from "));
-
+function normalizeFile(item: GithubFileItem): PullRequestFile {
   return {
-    filename,
-    patch: patchLines.join("\n").trim(),
-    status: isRemoved ? "removed" : isAdded ? "added" : isRenamed ? "renamed" : "modified",
-    additions,
-    deletions,
+    filename: typeof item.filename === "string" ? item.filename : "",
+    patch: typeof item.patch === "string" ? item.patch : "",
+    status: typeof item.status === "string" ? item.status : "modified",
+    additions: typeof item.additions === "number" ? item.additions : 0,
+    deletions: typeof item.deletions === "number" ? item.deletions : 0,
   };
 }
 
-function parseUnifiedDiff(diffText: string): PullRequestFile[] {
-  const normalized = diffText.replace(/\r\n/g, "\n");
-  const blocks = normalized
-    .split(/^diff --git /m)
-    .filter((block) => block.trim().length > 0)
-    .map((block) => `diff --git ${block.trimEnd()}`);
-
-  const parsed = blocks
-    .map((block) => parseDiffBlock(block))
-    .filter((item): item is GithubFileItem => item !== null);
-
-  return finalizeFiles(parsed);
-}
-
-async function fetchFilesFromDiffFallback(
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<PullRequestFile[]> {
-  const diffUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}.diff`;
-  console.log(
-    `[github] Fetching page 1 for ${owner}/${repo}/pulls/${prNumber}`,
-  );
-  const response = await fetch(diffUrl, {
-    headers: { "User-Agent": "pr-review-ai/1.0" },
-    redirect: "follow",
-    cache: "no-store",
-  });
-  console.log(`[github] Response status: ${response.status}`);
-
-  if (!response.ok) {
-    const mapped = mapStatusToMessage(response.status, owner, repo, prNumber);
-    throw new GitHubFetchError(
-      mapped ?? `GitHub diff fetch error: HTTP ${response.status}`,
-      response.status,
-    );
-  }
-
-  const diffText = await response.text();
-  if (!diffText.includes("diff --git ")) {
-    throw new GitHubFetchError("Unexpected GitHub diff response format");
-  }
-
-  return parseUnifiedDiff(diffText);
-}
-
-function shouldTryDiffFallback(error: unknown): boolean {
-  if (!(error instanceof GitHubFetchError)) {
-    return true;
-  }
-  if (error.status === 422) {
-    return false;
-  }
-  return true;
-}
-
 export async function fetchPRDiff(prUrl: string): Promise<PullRequestFile[]> {
-  const { owner, repo, number: prNumber } = parsePRUrl(prUrl);
+  const { owner, repo, number } = parsePRUrl(prUrl);
+  console.log(`[github] Fetching PR files for ${owner}/${repo} #${number}`);
 
-  try {
-    return await fetchFilesFromApi(owner, repo, prNumber);
-  } catch (apiError) {
-    if (!shouldTryDiffFallback(apiError)) {
-      throw apiError;
-    }
+  let headers = buildHeaders();
+  const token = process.env.GITHUB_TOKEN;
+  const tokenSet =
+    typeof token === "string" &&
+    token.length > 10 &&
+    !token.startsWith("REPLACE");
 
+  const allFiles: PullRequestFile[] = [];
+  let page = 1;
+  let attemptedUnauthenticatedRetry = false;
+
+  while (true) {
+    const pageUrl = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`;
+
+    let response: Response;
     try {
-      const fallbackFiles = await fetchFilesFromDiffFallback(
-        owner,
-        repo,
-        prNumber,
+      response = await fetch(pageUrl, {
+        method: "GET",
+        headers,
+        cache: "no-store",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown network error";
+      throw new Error(`Network error while fetching GitHub PR files: ${message}`);
+    }
+
+    const rateRemaining = response.headers.get("x-ratelimit-remaining") ?? "unknown";
+    console.log(
+      `[github] Page ${page} -> HTTP ${response.status}, rate remaining: ${rateRemaining}`,
+    );
+
+    if (
+      response.status === 404 &&
+      tokenSet &&
+      !attemptedUnauthenticatedRetry
+    ) {
+      attemptedUnauthenticatedRetry = true;
+      const retryHeaders = { ...headers };
+      delete retryHeaders.Authorization;
+      console.log(
+        "[github] Received 404 with token; retrying once without Authorization header",
       );
-      if (fallbackFiles.length > 0) {
-        return fallbackFiles;
-      }
-    } catch (fallbackError) {
-      if (!(apiError instanceof Error)) {
-        throw fallbackError;
+
+      try {
+        const retryResponse = await fetch(pageUrl, {
+          method: "GET",
+          headers: retryHeaders,
+          cache: "no-store",
+        });
+        const retryRate =
+          retryResponse.headers.get("x-ratelimit-remaining") ?? "unknown";
+        console.log(
+          `[github] Unauthenticated retry -> HTTP ${retryResponse.status}, rate remaining: ${retryRate}`,
+        );
+        response = retryResponse;
+        if (retryResponse.ok) {
+          headers = retryHeaders;
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown network error";
+        throw new Error(
+          `Network error while retrying GitHub request without token: ${message}`,
+        );
       }
     }
 
-    if (apiError instanceof Error) {
-      throw apiError;
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error(
+          "GitHub authentication failed. Your GITHUB_TOKEN is invalid or expired. Generate a new one at github.com/settings/tokens and update it in Vercel Dashboard -> Settings -> Environment Variables.",
+        );
+      }
+
+      if (response.status === 403 || response.status === 429) {
+        throw new Error(
+          `GitHub API rate limit exceeded. Token set on server: ${tokenSet}. Add a valid GITHUB_TOKEN in Vercel Dashboard -> Settings -> Environment Variables then redeploy.`,
+        );
+      }
+
+      if (response.status === 404) {
+        if (!tokenSet) {
+          throw new Error(
+            "GitHub returned 404. This is most likely a RATE LIMIT problem — no GITHUB_TOKEN is set on this server. Unauthenticated requests are limited to 60 per hour. Go to Vercel Dashboard -> Settings -> Environment Variables and add your GITHUB_TOKEN, then redeploy.",
+          );
+        }
+
+        throw new Error(
+          `PR not found at github.com/${owner}/${repo}/pull/${number}. Confirm the repository is public and this PR number exists.`,
+        );
+      }
+
+      if (response.status === 422) {
+        throw new Error(
+          `Invalid PR. The pull request number ${number} does not exist in ${owner}/${repo}.`,
+        );
+      }
+
+      throw new Error(
+        `GitHub API returned HTTP ${response.status} for ${owner}/${repo}/pull/${number}`,
+      );
     }
 
-    throw new Error("Failed to fetch PR diff");
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload)) {
+      throw new Error("GitHub API returned an unexpected response format for PR files.");
+    }
+
+    const pageFiles = payload as GithubFileItem[];
+    const validPageFiles = pageFiles
+      .filter((file) => file.status !== "removed")
+      .filter(
+        (file) =>
+          typeof file.patch === "string" && file.patch.trim().length > 0,
+      )
+      .map(normalizeFile);
+
+    allFiles.push(...validPageFiles);
+
+    if (pageFiles.length < 100) {
+      break;
+    }
+
+    page += 1;
+    if (page > 10) {
+      break;
+    }
   }
+
+  const cappedFiles = allFiles.slice(0, 50);
+  console.log(
+    `[github] Total reviewable files: ${allFiles.length}, after cap: ${cappedFiles.length}`,
+  );
+  return cappedFiles;
 }

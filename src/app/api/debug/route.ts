@@ -1,39 +1,83 @@
-export async function GET(): Promise<Response> {
-  const openaiKey = process.env.OPENAI_API_KEY
-  const githubToken = process.env.GITHUB_TOKEN
+import { buildHeaders } from "@/lib/github";
 
-  // Test GitHub API reachability
-  let githubStatus = 'untested'
-  let rateLimitRemaining = 'unknown'
+type DebugResponse = {
+  status: "ok";
+  timestamp: string;
+  environment: string | undefined;
+  openai: {
+    key_set: boolean;
+    key_valid_format: boolean;
+    key_preview: string;
+  };
+  github: {
+    token_set: boolean;
+    token_preview: string;
+    api_status: string;
+    rate_limit_remaining: string;
+    rate_limit_total: string;
+  };
+};
+
+export async function GET(): Promise<Response> {
+  const openaiKey = process.env.OPENAI_API_KEY;
+  const githubToken = process.env.GITHUB_TOKEN;
+
+  const openaiSet = typeof openaiKey === "string" && openaiKey.length > 0;
+  const githubSet = typeof githubToken === "string" && githubToken.length > 0;
+
+  let githubApiStatus = "ERROR: Unknown";
+  let rateLimitRemaining = "unknown";
+  let rateLimitTotal = "unknown";
+
   try {
-    const headers: Record<string, string> = {
-      'Accept': 'application/vnd.github+json',
-      'User-Agent': 'pr-review-ai/1.0'
+    const response = await fetch("https://api.github.com/rate_limit", {
+      method: "GET",
+      headers: buildHeaders(),
+      cache: "no-store",
+    });
+
+    if (response.ok) {
+      githubApiStatus = "REACHABLE";
+    } else {
+      githubApiStatus = `HTTP ${response.status}`;
     }
-    if (githubToken && githubToken.length > 10) {
-      headers['Authorization'] = `Bearer ${githubToken}`
-    }
-    const res = await fetch('https://api.github.com/rate_limit', { headers })
-    const data = await res.json() as { rate?: { remaining?: number } }
-    githubStatus = res.status === 200 ? 'reachable' : `HTTP ${res.status}`
-    rateLimitRemaining = String(data?.rate?.remaining ?? 'unknown')
-  } catch (e) {
-    githubStatus = `error: ${e instanceof Error ? e.message : 'unknown'}`
+
+    rateLimitRemaining =
+      response.headers.get("x-ratelimit-remaining") ?? "unknown";
+    rateLimitTotal = response.headers.get("x-ratelimit-limit") ?? "unknown";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    githubApiStatus = `ERROR: ${message}`;
   }
 
-  return Response.json({
+  const result: DebugResponse = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV,
     openai: {
-      set: !!openaiKey,
-      valid: openaiKey?.startsWith('sk-') ?? false,
-      preview: openaiKey ? openaiKey.slice(0, 7) + '***' : 'NOT SET'
+      key_set: openaiSet,
+      key_valid_format: typeof openaiKey === "string" && openaiKey.startsWith("sk-"),
+      key_preview:
+        typeof openaiKey === "string" && openaiKey.length >= 7
+          ? `${openaiKey.slice(0, 7)}***`
+          : "NOT SET",
     },
     github: {
-      token_set: !!githubToken && githubToken.length > 10,
-      preview: githubToken ? githubToken.slice(0, 8) + '***' : 'NOT SET',
-      api_status: githubStatus,
-      rate_limit_remaining: rateLimitRemaining
+      token_set: githubSet,
+      token_preview:
+        typeof githubToken === "string" && githubToken.length >= 8
+          ? `${githubToken.slice(0, 8)}***`
+          : "NOT SET",
+      api_status: githubApiStatus,
+      rate_limit_remaining: rateLimitRemaining,
+      rate_limit_total: rateLimitTotal,
     },
-    node_env: process.env.NODE_ENV,
-    timestamp: new Date().toISOString()
-  })
+  };
+
+  return Response.json(result, {
+    status: 200,
+    headers: {
+      "Cache-Control": "no-store",
+    },
+  });
 }

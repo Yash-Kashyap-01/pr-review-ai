@@ -176,7 +176,7 @@ export default function Home() {
             }
             className="text-blue-500 hover:text-blue-400 underline"
           >
-            Express.js #3276
+            expressjs/express #3276
           </button>
           {" · "}
           <button
@@ -186,7 +186,7 @@ export default function Home() {
             }
             className="text-blue-500 hover:text-blue-400 underline"
           >
-            Facebook React #11347
+            facebook/react #11347
           </button>
         </p>
       </div>
