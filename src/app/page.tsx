@@ -1,101 +1,316 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useState } from "react";
+import ReviewCard from "@/components/ReviewCard";
+import Spinner from "@/components/Spinner";
+
+interface ReviewComment {
+  file: string;
+  line: number;
+  severity: "critical" | "warning" | "suggestion";
+  issue: string;
+  fix: string;
+}
+
+interface ReviewResult {
+  comments: ReviewComment[];
+  summary: string;
+  fileCount?: number;
+}
+
+function generateMarkdown(result: ReviewResult, prUrl: string): string {
+  return (
+    "# PR Review: " +
+    prUrl +
+    "\n\n" +
+    "## Summary\n" +
+    result.summary +
+    "\n\n" +
+    "## Comments\n\n" +
+    result.comments
+      .map(
+        (c) =>
+          "### " +
+          c.file +
+          " (Line " +
+          c.line +
+          ")\n" +
+          "**Severity:** " +
+          c.severity +
+          "\n\n" +
+          "**Issue:** " +
+          c.issue +
+          "\n\n" +
+          "**Fix:**\n```\n" +
+          c.fix +
+          "\n```",
+      )
+      .join("\n\n---\n\n")
+  );
+}
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [prUrl, setPrUrl] = useState("");
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
+    "idle",
+  );
+  const [statusText, setStatusText] = useState("");
+  const [result, setResult] = useState<ReviewResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [fileCount, setFileCount] = useState(0);
+  const [copyLabel, setCopyLabel] = useState("Copy Review as Markdown");
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  useEffect(() => {
+    if (status !== "loading") return;
+
+    const messages = [
+      "Fetching PR diff from GitHub...",
+      "Analyzing code changes...",
+      "Running security checks...",
+      "Generating review comments...",
+    ];
+    setStatusText(messages[0]);
+    let i = 1;
+    const interval = setInterval(() => {
+      if (i < messages.length) {
+        setStatusText(messages[i]);
+        i++;
+      }
+    }, 3500);
+    return () => clearInterval(interval);
+  }, [status]);
+
+  async function handleReview() {
+    if (!prUrl.trim()) return;
+
+    if (!prUrl.includes("github.com") || !prUrl.includes("/pull/")) {
+      setStatus("error");
+      setErrorMessage(
+        "Please enter a valid GitHub PR URL — e.g. https://github.com/owner/repo/pull/123",
+      );
+      return;
+    }
+
+    setStatus("loading");
+    setResult(null);
+    setErrorMessage("");
+
+    try {
+      const res = await fetch("/api/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prUrl: prUrl.trim() }),
+      });
+      const data = (await res.json()) as ReviewResult & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || "Review failed");
+      }
+      const headerCount = parseInt(
+        res.headers.get("X-Review-File-Count") || "0",
+        10,
+      );
+      setFileCount(headerCount || data.fileCount || 0);
+      setResult(data);
+      setStatus("success");
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : "Something went wrong",
+      );
+      setStatus("error");
+    }
+  }
+
+  async function handleCopy() {
+    if (!result) return;
+    await navigator.clipboard.writeText(generateMarkdown(result, prUrl));
+    setCopyLabel("✓ Copied!");
+    setTimeout(() => setCopyLabel("Copy Review as Markdown"), 2000);
+  }
+
+  const grouped = (result?.comments || []).reduce(
+    (acc, c) => {
+      if (!acc[c.file]) acc[c.file] = [];
+      acc[c.file].push(c);
+      return acc;
+    },
+    {} as Record<string, ReviewComment[]>,
+  );
+  const sortedFiles = Object.keys(grouped).sort();
+
+  return (
+    <main className="min-h-screen bg-gray-950">
+      <div className="max-w-3xl mx-auto px-4 py-16 text-center">
+        <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent mb-3">
+          PR Review AI
+        </h1>
+        <p className="text-gray-400 text-lg mb-10">
+          Paste a GitHub PR URL and get a senior engineer code review in seconds
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="url"
+            value={prUrl}
+            onChange={(e) => setPrUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void handleReview()}
+            disabled={status === "loading"}
+            placeholder="https://github.com/owner/repo/pull/123"
+            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50 text-sm"
+          />
+          <button
+            type="button"
+            onClick={() => void handleReview()}
+            disabled={status === "loading" || !prUrl.trim()}
+            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-lg transition-colors duration-150 text-sm"
           >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            {status === "loading" ? "Reviewing..." : "Review PR →"}
+          </button>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+
+        <p className="text-gray-600 text-xs mt-4">
+          Try an example:{" "}
+          <button
+            type="button"
+            onClick={() =>
+              setPrUrl("https://github.com/OWASP/NodeGoat/pull/226")
+            }
+            className="text-blue-500 hover:text-blue-400 underline"
+          >
+            OWASP NodeGoat #226
+          </button>
+          {" · "}
+          <button
+            type="button"
+            onClick={() =>
+              setPrUrl("https://github.com/gothinkster/realworld/pull/388")
+            }
+            className="text-blue-500 hover:text-blue-400 underline"
+          >
+            gothinkster/realworld #388
+          </button>
+        </p>
+      </div>
+
+      {status === "loading" && (
+        <div className="max-w-3xl mx-auto px-4 pb-16 text-center">
+          <Spinner />
+          <p className="text-gray-400 text-sm mt-4 animate-pulse">{statusText}</p>
+        </div>
+      )}
+
+      {status === "error" && (
+        <div className="max-w-3xl mx-auto px-4 pb-16">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-5">
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-red-400 font-semibold">⚠ Error</p>
+                <p className="text-red-300 text-sm mt-1">{errorMessage}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStatus("idle")}
+                className="text-gray-500 hover:text-gray-300 text-sm ml-4"
+              >
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {status === "success" && result && (
+        <div className="max-w-4xl mx-auto px-4 pb-20">
+          <div className="flex justify-between items-center mb-6">
+            <p className="text-gray-600 text-xs">
+              Reviewed {fileCount} file{fileCount !== 1 ? "s" : ""} · Powered by
+              GPT-4o
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void handleCopy()}
+                className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm px-4 py-2 rounded-lg border border-gray-700 transition-colors"
+              >
+                {copyLabel}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setStatus("idle");
+                  setResult(null);
+                  setErrorMessage("");
+                }}
+                className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-sm px-3 py-2 rounded-lg border border-gray-700 transition-colors"
+              >
+                New Review
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-5 mb-6">
+            <p className="text-blue-400 font-semibold text-sm uppercase tracking-wider mb-2">
+              Review Summary
+            </p>
+            <p className="text-gray-200 leading-relaxed">{result.summary}</p>
+          </div>
+
+          {result.comments.length > 0 && (
+            <div className="flex flex-wrap gap-3 mb-8">
+              {(["critical", "warning", "suggestion"] as const).map((sev) => {
+                const n = result.comments.filter((c) => c.severity === sev).length;
+                if (n === 0) return null;
+                const styles = {
+                  critical: "bg-red-500/20 text-red-400 border-red-500/30",
+                  warning: "bg-yellow-400/20 text-yellow-300 border-yellow-400/30",
+                  suggestion:
+                    "bg-green-400/20 text-green-400 border-green-400/30",
+                };
+                return (
+                  <span
+                    key={sev}
+                    className={`rounded-full px-3 py-1 text-sm font-medium border ${styles[sev]}`}
+                  >
+                    {n} {sev.charAt(0).toUpperCase() + sev.slice(1)}
+                    {n !== 1 ? "s" : ""}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {result.comments.length === 0 && (
+            <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-12 text-center">
+              <p className="text-4xl mb-3">✅</p>
+              <p className="text-green-400 font-semibold text-xl">
+                No issues found!
+              </p>
+              <p className="text-gray-400 mt-2">
+                This PR looks clean. No critical issues, warnings, or suggestions
+                were identified.
+              </p>
+            </div>
+          )}
+
+          {sortedFiles.map((filename) => (
+            <div key={filename} className="mb-6">
+              <div className="bg-gray-900 border border-gray-800 border-b-gray-900 rounded-t-lg px-4 py-3 flex items-center justify-between">
+                <span className="font-mono text-sm text-gray-300 truncate max-w-lg">
+                  📁 {filename}
+                </span>
+                <span className="text-gray-500 text-xs ml-4 flex-shrink-0">
+                  {grouped[filename].length} issue
+                  {grouped[filename].length !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <div className="border border-gray-800 border-t-0 rounded-b-lg divide-y divide-gray-800 overflow-hidden">
+                {grouped[filename].map((comment, idx) => (
+                  <ReviewCard key={idx} comment={comment} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
   );
 }

@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PR Review AI
 
-## Getting Started
+> Get a senior engineer code review on any public GitHub PR in seconds — powered by GPT-4o.
 
-First, run the development server:
+## What it does
+- Paste any public GitHub PR URL
+- Fetches the full diff via GitHub REST API
+- Sends it to GPT-4o with a senior-engineer system prompt
+- Returns structured comments grouped by file with severity badges and fix suggestions
 
+## Stack
+Next.js 14 (App Router) · TypeScript · Tailwind CSS · OpenAI GPT-4o · Vercel
+
+## Getting started
 ```bash
+git clone <your-repo-url>
+cd pr-review-ai
+npm install
+cp .env.local.example .env.local
+# Edit .env.local with your keys
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
+Open http://localhost:3000
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Environment variables
+| Variable | Required | Description |
+|---|---|---|
+| OPENAI_API_KEY | Yes | From platform.openai.com/api-keys |
+| GITHUB_TOKEN | Recommended | From github.com/settings/tokens — raises rate limit from 60 to 5000 req/hr |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Demo PRs
+- https://github.com/OWASP/NodeGoat/pull/226 (security issues)
+- https://github.com/gothinkster/realworld/pull/388 (code quality)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Architecture
+User → Next.js UI → POST /api/review → GitHub REST API (fetch diff) → GPT-4o (review) → Structured JSON → Rendered cards
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## License
+MIT

@@ -25,3 +25,26 @@ body {
     text-wrap: balance;
   }
 }
+
+html {
+  scroll-behavior: smooth;
+}
+
+::selection {
+  background: #3B82F6;
+  color: white;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #111827;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}

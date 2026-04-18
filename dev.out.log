@@ -1,0 +1,15 @@
+
+> pr-review-ai@0.1.0 dev
+> next dev
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 1741ms
+ ○ Compiling / ...
+ ✓ Compiled / in 2.6s (550 modules)
+ HEAD / 200 in 2785ms
+ ✓ Compiled in 156ms (255 modules)
+ HEAD / 200 in 51ms
