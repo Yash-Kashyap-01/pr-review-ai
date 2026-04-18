@@ -16,59 +16,64 @@ class GitHubFetchError extends Error {
   }
 }
 
-const EXPECTED_URL_HINT =
-  "Invalid GitHub PR URL. Expected: https://github.com/owner/repo/pull/123";
+export function parsePRUrl(
+  prUrl: string,
+): { owner: string; repo: string; number: number } {
+  try {
+    const cleaned = prUrl.trim();
+    const withoutSlash = cleaned.replace(/\/$/, "");
+    const withoutQuery = withoutSlash.split("?")[0].split("#")[0];
+    const withoutSuffix = withoutQuery.replace(
+      /\/(files|commits|checks|reviews)$/,
+      "",
+    );
 
-function stripUrlForParsing(raw: string): string {
-  let s = raw.trim();
-  s = s.replace(/#.*$/, "");
-  s = s.replace(/\?.*$/, "");
-  s = s.replace(/\/+$/, "");
-  return s;
-}
-
-export function parsePRUrl(prUrl: string): {
-  owner: string;
-  repo: string;
-  number: number;
-} {
-  const cleaned = stripUrlForParsing(prUrl);
-  const lower = cleaned.toLowerCase();
-  if (!lower.startsWith("https://github.com/")) {
-    throw new Error(EXPECTED_URL_HINT);
-  }
-
-  const parts = cleaned.split("/");
-  const owner = parts[3];
-  const repo = parts[4];
-  const pullSegment = parts[5];
-  const numStr = parts[6];
-
-  if (
-    !owner ||
-    !repo ||
-    pullSegment?.toLowerCase() !== "pull" ||
-    !numStr
-  ) {
-    throw new Error(EXPECTED_URL_HINT);
-  }
-
-  const trailing = parts.slice(7);
-  if (trailing.length > 0) {
-    const last = trailing[trailing.length - 1]?.toLowerCase();
-    const allowedExtra =
-      trailing.length === 1 && (last === "files" || last === "commits");
-    if (!allowedExtra) {
-      throw new Error(EXPECTED_URL_HINT);
+    let pathname: string;
+    try {
+      const url = new URL(withoutSuffix);
+      if (!url.hostname.includes("github.com")) {
+        throw new Error("Not a GitHub URL");
+      }
+      pathname = url.pathname;
+    } catch {
+      if (withoutSuffix.includes("github.com")) {
+        pathname = withoutSuffix.split("github.com")[1];
+      } else {
+        throw new Error("Invalid GitHub URL");
+      }
     }
-  }
 
-  const number = Number.parseInt(numStr, 10);
-  if (!Number.isInteger(number) || number < 1) {
-    throw new Error(EXPECTED_URL_HINT);
-  }
+    const parts = pathname.replace(/^\//, "").split("/");
+    if (parts.length < 4) {
+      throw new Error("URL too short");
+    }
 
-  return { owner, repo, number };
+    const owner = parts[0];
+    const repo = parts[1];
+    const pullWord = parts[2];
+    const numberStr = parts[3];
+
+    if (!owner || !repo) {
+      throw new Error("Missing owner or repo");
+    }
+
+    if (pullWord !== "pull") {
+      throw new Error("Not a pull request URL — must contain /pull/");
+    }
+
+    const number = parseInt(numberStr, 10);
+    if (isNaN(number) || number <= 0) {
+      throw new Error("Invalid PR number");
+    }
+
+    return { owner, repo, number };
+  } catch (err) {
+    throw new Error(
+      `Invalid GitHub PR URL. Expected format: https://github.com/owner/repo/pull/123. ` +
+        `Got: "${prUrl}". ` +
+        (err instanceof Error ? `Reason: ${err.message}` : ""),
+    );
+  }
 }
 
 type GithubFileItem = {
@@ -79,28 +84,39 @@ type GithubFileItem = {
   deletions?: number;
 };
 
-function buildHeaders(): HeadersInit {
+function buildHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "pr-review-ai/1.0",
   };
   const token = process.env.GITHUB_TOKEN;
-  if (typeof token === "string" && token.length > 0) {
+  if (token && token.length > 10 && !token.includes("REPLACE")) {
     headers.Authorization = `Bearer ${token}`;
   }
   return headers;
 }
 
-function mapStatusToMessage(status: number): string | null {
+function mapStatusToMessage(
+  status: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): string | null {
   if (status === 404) {
-    return "PR not found. Check the URL and ensure the repo is public.";
+    return (
+      `PR not found: github.com/${owner}/${repo}/pull/${prNumber}. ` +
+      "Make sure the repository is public and the PR number exists."
+    );
   }
   if (status === 401) {
     return "GitHub authentication failed. Check GITHUB_TOKEN or remove it to use public access.";
   }
   if (status === 403 || status === 429) {
-    return "GitHub rate limit exceeded. Add a GITHUB_TOKEN to .env.local.";
+    return (
+      "GitHub rate limit hit. The app needs a GITHUB_TOKEN environment variable. " +
+      "Add it in your Vercel dashboard under Settings → Environment Variables."
+    );
   }
   if (status === 422) {
     return "Invalid PR number.";
@@ -125,29 +141,36 @@ function finalizeFiles(all: GithubFileItem[]): PullRequestFile[] {
 async function fetchFilesFromApi(
   owner: string,
   repo: string,
-  number: number,
+  prNumber: number,
 ): Promise<PullRequestFile[]> {
   const headers = buildHeaders();
-  const base = `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files`;
+  const base = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`;
   const all: GithubFileItem[] = [];
   let page = 1;
 
   for (;;) {
     const url = `${base}?per_page=100&page=${page}`;
-    const res = await fetch(url, { headers, cache: "no-store" });
+    console.log(
+      `[github] Fetching page ${page} for ${owner}/${repo}/pulls/${prNumber}`,
+    );
+    const response = await fetch(url, { headers, cache: "no-store" });
+    console.log(`[github] Response status: ${response.status}`);
 
-    const mapped = mapStatusToMessage(res.status);
+    const mapped = mapStatusToMessage(response.status, owner, repo, prNumber);
     if (mapped) {
-      throw new GitHubFetchError(mapped, res.status);
+      throw new GitHubFetchError(mapped, response.status);
     }
 
-    if (!res.ok) {
-      throw new GitHubFetchError(`GitHub API error: HTTP ${res.status}`, res.status);
+    if (!response.ok) {
+      throw new GitHubFetchError(
+        `GitHub API error: HTTP ${response.status}`,
+        response.status,
+      );
     }
 
     let data: unknown;
     try {
-      data = await res.json();
+      data = await response.json();
     } catch {
       throw new GitHubFetchError("Unexpected GitHub API response format");
     }
@@ -245,24 +268,28 @@ function parseUnifiedDiff(diffText: string): PullRequestFile[] {
 async function fetchFilesFromDiffFallback(
   owner: string,
   repo: string,
-  number: number,
+  prNumber: number,
 ): Promise<PullRequestFile[]> {
-  const diffUrl = `https://github.com/${owner}/${repo}/pull/${number}.diff`;
-  const res = await fetch(diffUrl, {
+  const diffUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}.diff`;
+  console.log(
+    `[github] Fetching page 1 for ${owner}/${repo}/pulls/${prNumber}`,
+  );
+  const response = await fetch(diffUrl, {
     headers: { "User-Agent": "pr-review-ai/1.0" },
     redirect: "follow",
     cache: "no-store",
   });
+  console.log(`[github] Response status: ${response.status}`);
 
-  if (!res.ok) {
-    const mapped = mapStatusToMessage(res.status);
+  if (!response.ok) {
+    const mapped = mapStatusToMessage(response.status, owner, repo, prNumber);
     throw new GitHubFetchError(
-      mapped ?? `GitHub diff fetch error: HTTP ${res.status}`,
-      res.status,
+      mapped ?? `GitHub diff fetch error: HTTP ${response.status}`,
+      response.status,
     );
   }
 
-  const diffText = await res.text();
+  const diffText = await response.text();
   if (!diffText.includes("diff --git ")) {
     throw new GitHubFetchError("Unexpected GitHub diff response format");
   }
@@ -281,17 +308,21 @@ function shouldTryDiffFallback(error: unknown): boolean {
 }
 
 export async function fetchPRDiff(prUrl: string): Promise<PullRequestFile[]> {
-  const { owner, repo, number } = parsePRUrl(prUrl);
+  const { owner, repo, number: prNumber } = parsePRUrl(prUrl);
 
   try {
-    return await fetchFilesFromApi(owner, repo, number);
+    return await fetchFilesFromApi(owner, repo, prNumber);
   } catch (apiError) {
     if (!shouldTryDiffFallback(apiError)) {
       throw apiError;
     }
 
     try {
-      const fallbackFiles = await fetchFilesFromDiffFallback(owner, repo, number);
+      const fallbackFiles = await fetchFilesFromDiffFallback(
+        owner,
+        repo,
+        prNumber,
+      );
       if (fallbackFiles.length > 0) {
         return fallbackFiles;
       }
