@@ -156,16 +156,52 @@ async function fetchFilesFromApi(
     const response = await fetch(url, { headers, cache: "no-store" });
     console.log(`[github] Response status: ${response.status}`);
 
-    const mapped = mapStatusToMessage(response.status, owner, repo, prNumber);
-    if (mapped) {
-      throw new GitHubFetchError(mapped, response.status);
-    }
-
     if (!response.ok) {
+      const rateLimitRemaining = response.headers.get('x-ratelimit-remaining')
+      const rateLimitReset = response.headers.get('x-ratelimit-reset')
+
+      console.log(`[github] HTTP ${response.status} for ${owner}/${repo}/pull/${prNumber}`)
+      console.log(`[github] Rate limit remaining: ${rateLimitRemaining}`)
+      console.log(`[github] GITHUB_TOKEN set: ${!!process.env.GITHUB_TOKEN}`)
+
+      if (response.status === 404) {
+        // Could be rate limit disguised as 404 when no token
+        if (!process.env.GITHUB_TOKEN || process.env.GITHUB_TOKEN.length < 10) {
+          throw new GitHubFetchError(
+            `GitHub returned 404. This is often caused by hitting the rate limit ` +
+            `without a GitHub token. The GITHUB_TOKEN environment variable is not ` +
+            `set on this server. Add it in Vercel Dashboard → Settings → ` +
+            `Environment Variables, then redeploy.`,
+            404,
+          )
+        }
+        throw new GitHubFetchError(
+          `PR not found: github.com/${owner}/${repo}/pull/${prNumber}. ` +
+          `Verify the PR exists and the repository is public.`,
+          404,
+        )
+      }
+
+      if (response.status === 403 || response.status === 429) {
+        throw new GitHubFetchError(
+          `GitHub API rate limit exceeded. ` +
+          `Add a GITHUB_TOKEN in Vercel Dashboard → Settings → Environment Variables. ` +
+          `Rate limit resets at: ${rateLimitReset ? new Date(parseInt(rateLimitReset) * 1000).toISOString() : 'unknown'}`,
+          response.status,
+        )
+      }
+
+      if (response.status === 422) {
+        throw new GitHubFetchError(
+          `Invalid PR. The pull request number may not exist in this repository.`,
+          422,
+        )
+      }
+
       throw new GitHubFetchError(
-        `GitHub API error: HTTP ${response.status}`,
+        `GitHub API error: HTTP ${response.status} for ${owner}/${repo}/pull/${prNumber}`,
         response.status,
-      );
+      )
     }
 
     let data: unknown;

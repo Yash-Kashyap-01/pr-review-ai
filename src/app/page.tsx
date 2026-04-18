@@ -154,7 +154,7 @@ export default function Home() {
             onChange={(e) => setPrUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void handleReview()}
             disabled={status === "loading"}
-            placeholder="https://github.com/owner/repo/pull/123"
+            placeholder="https://github.com/expressjs/express/pull/3276"
             className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:opacity-50 text-sm"
           />
           <button
@@ -172,21 +172,21 @@ export default function Home() {
           <button
             type="button"
             onClick={() =>
-              setPrUrl("https://github.com/OWASP/NodeGoat/pull/226")
+              setPrUrl("https://github.com/expressjs/express/pull/3276")
             }
             className="text-blue-500 hover:text-blue-400 underline"
           >
-            OWASP NodeGoat #226
+            Express.js #3276
           </button>
           {" · "}
           <button
             type="button"
             onClick={() =>
-              setPrUrl("https://github.com/gothinkster/realworld/pull/388")
+              setPrUrl("https://github.com/facebook/react/pull/11347")
             }
             className="text-blue-500 hover:text-blue-400 underline"
           >
-            gothinkster/realworld #388
+            Facebook React #11347
           </button>
         </p>
       </div>
